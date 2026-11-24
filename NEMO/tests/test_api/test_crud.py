@@ -109,3 +109,41 @@ class RestCRUDTestCase(NEMOTestCaseMixin, TestCase):
         response = self.client.delete(delete_url, follow=True)
         self.assertEqual(response.status_code, 204)
         self.assertRaises(User.DoesNotExist, User.objects.get, username="jdoe")
+
+    def test_reservation_list_configuration_options_query_count(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from NEMO.models import ConfigurationOption, Reservation, Tool
+
+        user = self.login_as_user()
+        user.user_permissions.add(Permission.objects.get(codename="view_reservation"))
+        tool = Tool.objects.create(name="api_test_tool")
+        start = timezone.now()
+
+        def create_reservations(count):
+            for i in range(count):
+                reservation = Reservation.objects.create(
+                    tool=tool,
+                    start=start + timedelta(hours=i),
+                    end=start + timedelta(hours=i, minutes=30),
+                    creator=user,
+                    user=user,
+                    short_notice=False,
+                )
+                ConfigurationOption.objects.create(
+                    name=f"Option {i}", reservation=reservation, current_setting="A", available_settings="A,B"
+                )
+
+        list_url = reverse("reservation-list")
+        create_reservations(2)
+        with self.assertNumQueries(6):
+            response = self.client.get(list_url, follow=True)
+        self.assertEqual(response.status_code, 200)
+        create_reservations(5)
+        with self.assertNumQueries(6):
+            response = self.client.get(list_url, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 7)
+        self.assertEqual(response.data[0]["configuration_options"][0]["current_setting"], "A")
