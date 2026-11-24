@@ -147,3 +147,42 @@ class RestCRUDTestCase(NEMOTestCaseMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 7)
         self.assertEqual(response.data[0]["configuration_options"][0]["current_setting"], "A")
+
+    def test_reservation_list_configuration_options_prefetched_in_batches(self):
+        from datetime import timedelta
+        from unittest import mock
+
+        from django.db import connection
+        from django.utils import timezone
+
+        from NEMO.models import ConfigurationOption, Reservation, Tool
+
+        user = self.login_as_user()
+        user.user_permissions.add(Permission.objects.get(codename="view_reservation"))
+        tool = Tool.objects.create(name="api_batch_tool")
+        start = timezone.now()
+        for i in range(5):
+            reservation = Reservation.objects.create(
+                tool=tool,
+                start=start + timedelta(hours=i),
+                end=start + timedelta(hours=i, minutes=30),
+                creator=user,
+                user=user,
+                short_notice=False,
+            )
+            for setting in ["B", "A"]:
+                ConfigurationOption.objects.create(
+                    name=f"Option {setting}", reservation=reservation, current_setting=setting, available_settings="A,B"
+                )
+        list_url = reverse("reservation-list")
+        with mock.patch.object(type(connection.features), "max_query_params", 2):
+            with self.assertNumQueries(8):
+                response = self.client.get(list_url + "?format=json")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data), 5)
+        for row in data:
+            self.assertEqual([option["current_setting"] for option in row["configuration_options"]], ["B", "A"])
+        with self.assertNumQueries(5):
+            response = self.client.get(list_url + "?format=json&fields=id")
+        self.assertEqual(response.json(), [{"id": row["id"]} for row in data])

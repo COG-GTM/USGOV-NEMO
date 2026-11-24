@@ -6,7 +6,8 @@ from urllib.parse import unquote
 from django.contrib.auth.models import Group, Permission
 from django.contrib.contenttypes.models import ContentType
 from django.core.files.storage import default_storage
-from django.db import transaction
+from django.db import connections, transaction
+from django.db.models import prefetch_related_objects
 from django.http import FileResponse, HttpResponseBadRequest, HttpResponseForbidden, HttpResponseNotFound
 from django.utils.safestring import mark_safe
 from drf_excel.mixins import XLSXFileMixin
@@ -16,6 +17,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.renderers import BrowsableAPIRenderer
 from rest_framework.response import Response
 from rest_framework.serializers import ListSerializer
+from rest_flex_fields.utils import is_included
 from rest_framework.views import APIView
 from rest_framework.viewsets import ViewSet
 
@@ -507,7 +509,7 @@ class RecurringConsumableChargesViewSet(ModelViewSet):
 
 class ReservationViewSet(ModelViewSet):
     filename = "reservations"
-    queryset = Reservation.objects.prefetch_related("configurationoption_set")
+    queryset = Reservation.objects.all()
     serializer_class = ReservationSerializer
     filterset_fields = {
         "id": key_filters,
@@ -534,6 +536,22 @@ class ReservationViewSet(ModelViewSet):
         "waived_by": key_filters,
         "note": string_filters,
     }
+
+    def get_serializer(self, *args, **kwargs):
+        serializer = super().get_serializer(*args, **kwargs)
+        if (
+            args
+            and isinstance(serializer, ListSerializer)
+            and "configuration_options" in serializer.child.fields
+            and is_included(self.request, "configuration_options")
+        ):
+            # Prefetch options in batches below the database's bind parameter limit (exports are unpaginated)
+            reservations = list(args[0])
+            batch_size = connections[Reservation.objects.db].features.max_query_params or len(reservations) or 1
+            for start in range(0, len(reservations), batch_size):
+                prefetch_related_objects(reservations[start : start + batch_size], "configurationoption_set")
+            serializer.instance = reservations
+        return serializer
 
 
 class ReservationQuestionsViewSet(ModelViewSet):
